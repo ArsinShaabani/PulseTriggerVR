@@ -66,6 +66,13 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|Combat")
     TObjectPtr<USceneComponent> MuzzleSocket = nullptr;
 
+    /** World-space jagged score popup (e.g., 368 / 584) triggered on kill. */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Enemy|UI")
+    TObjectPtr<class UWidgetComponent> KillScorePopupWidget = nullptr;
+
+    UFUNCTION(BlueprintImplementableEvent, Category = "Enemy|VFX")
+    void OnPlayShatterDeathVFX(const FVector& ShotDirection, int32 PointsAwarded, bool bWasOnBeat);
+
     UPROPERTY(Transient)
     TObjectPtr<UEnemyArchetypeDataAsset> ArchetypeData = nullptr;
 

@@ -7,6 +7,7 @@
 #include "Systems/PulseAudioSubsystem.h"
 #include "Components/SphereComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/WidgetComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "Kismet/GameplayStatics.h"
@@ -26,6 +27,13 @@ AEnemyBase::AEnemyBase()
     MuzzleSocket = CreateDefaultSubobject<USceneComponent>(TEXT("MuzzleSocket"));
     MuzzleSocket->SetupAttachment(GetMesh());
     MuzzleSocket->SetRelativeLocation(FVector(45.0f, 0.0f, 130.0f));
+
+    KillScorePopupWidget = CreateDefaultSubobject<UWidgetComponent>(TEXT("KillScorePopupWidget"));
+    KillScorePopupWidget->SetupAttachment(RootComponent);
+    KillScorePopupWidget->SetWidgetSpace(EWidgetSpace::Screen);
+    KillScorePopupWidget->SetDrawSize(FVector2D(160.0f, 96.0f));
+    KillScorePopupWidget->SetRelativeLocation(FVector(0.0f, 0.0f, 210.0f));
+    KillScorePopupWidget->SetVisibility(false);
 
     if (UCharacterMovementComponent* MoveComp = GetCharacterMovement())
     {
@@ -216,6 +224,14 @@ void AEnemyBase::HandleDeathSequence(const FVector& ShotDirection)
     GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     DeathReturnTimer = 0.45f;
 
+    if (KillScorePopupWidget)
+    {
+        KillScorePopupWidget->SetVisibility(true);
+    }
+
+    const int32 BasePts = ArchetypeData ? ArchetypeData->BaseKillScore : 200;
+    OnPlayShatterDeathVFX(ShotDirection, BasePts, true);
+
     if (ArchetypeData)
     {
         if (ArchetypeData->DeathDissolveVFX)
@@ -255,5 +271,9 @@ void AEnemyBase::OnAcquiredFromPool_Implementation()
 void AEnemyBase::OnReturnedToPool_Implementation()
 {
     bIsPooled = true;
+    if (KillScorePopupWidget)
+    {
+        KillScorePopupWidget->SetVisibility(false);
+    }
     TransitionState(EEnemyState::Pooled);
 }

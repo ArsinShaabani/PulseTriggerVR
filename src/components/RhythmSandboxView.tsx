@@ -3,13 +3,15 @@ import { ArrowLeft, Pause, RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import {
   createSandboxState,
   fireSandboxWeapon,
-  projectEnemyToNormalizedScreen,
   stepSandboxSimulation,
   triggerSandboxReload,
   type SandboxState,
+  type StageThemeId,
 } from '../engine/sandboxSimulation';
 import { computeBeatGridPosition, type PerformanceGrade, type ScoreMetrics } from '../engine/rhythmScoring';
 import { synthAudio } from '../engine/synthAudio';
+import { PistolWhip3DEngine } from '../engine/threeScene/PistolWhip3DEngine';
+import { THREE_THEME_PALETTES } from '../engine/threeScene/themePalettes';
 
 interface RhythmSandboxViewProps {
   autoStart: boolean;
@@ -18,6 +20,7 @@ interface RhythmSandboxViewProps {
 
 interface HudSnapshot {
   status: SandboxState['status'];
+  theme: StageThemeId;
   health: number;
   maxHealth: number;
   leftAmmo: number;
@@ -30,11 +33,10 @@ interface HudSnapshot {
   progressPercent: number;
   calloutText: string;
   dodgePosture: 'Center' | 'Lean Left' | 'Lean Right' | 'Duck';
-  beatPhase: number;
+  damagedFlash: boolean;
 }
 
 function makeHudSnapshot(sim: SandboxState): HudSnapshot {
-  const grid = computeBeatGridPosition(sim.songTimeSec, sim.timingConfig);
   let dodgePosture: HudSnapshot['dodgePosture'] = 'Center';
   if (sim.headCrouchY < -0.18) dodgePosture = 'Duck';
   else if (sim.headOffsetX < -0.18) dodgePosture = 'Lean Left';
@@ -42,6 +44,7 @@ function makeHudSnapshot(sim: SandboxState): HudSnapshot {
 
   return {
     status: sim.status,
+    theme: sim.theme,
     health: sim.playerHealth,
     maxHealth: sim.maxHealth,
     leftAmmo: sim.leftAmmo,
@@ -54,7 +57,7 @@ function makeHudSnapshot(sim: SandboxState): HudSnapshot {
     progressPercent: Math.min(100, Math.round((sim.songTimeSec / sim.trackDurationSec) * 100)),
     calloutText: sim.lastCalloutTimer > 0 ? sim.lastCalloutText : '',
     dodgePosture,
-    beatPhase: grid.beatPhaseNormalized,
+    damagedFlash: sim.invulnTimer > 0.4,
   };
 }
 
@@ -76,16 +79,20 @@ function gradeAccentColor(grade: PerformanceGrade): string {
 }
 
 export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxViewProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasMountRef = useRef<HTMLDivElement | null>(null);
+  const engineRef = useRef<PistolWhip3DEngine | null>(null);
   const beatRingRef = useRef<HTMLDivElement | null>(null);
+  const crosshairRef = useRef<HTMLDivElement | null>(null);
 
   const [dualWield, setDualWield] = useState(true);
   const [autoReload, setAutoReload] = useState(false);
+  const [selectedTheme, setSelectedTheme] = useState<StageThemeId>('sunset');
   const [muted, setMuted] = useState(false);
 
-  const simRef = useRef<SandboxState>(createSandboxState(true, false));
+  const simRef = useRef<SandboxState>(createSandboxState(true, false, 'sunset'));
   const keysRef = useRef<Set<string>>(new Set());
   const aimNormRef = useRef<{ x: number; y: number }>({ x: 0.5, y: 0.5 });
+  const requestRenderRef = useRef<() => void>(() => {});
 
   const [hud, setHud] = useState<HudSnapshot>(() => makeHudSnapshot(simRef.current));
 
@@ -97,20 +104,31 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
     }
   }, []);
 
-  const startNewRun = useCallback((fromUserGesture = true) => {
-    if (fromUserGesture) {
-      synthAudio.unlock();
-    }
-    const fresh = createSandboxState(dualWield, autoReload);
-    fresh.status = 'playing';
-    simRef.current = fresh;
-    keysRef.current.clear();
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-    syncDocumentBodyState('playing');
-    setHud(makeHudSnapshot(fresh));
-  }, [dualWield, autoReload, syncDocumentBodyState]);
+  const handleSelectTheme = useCallback((theme: StageThemeId) => {
+    setSelectedTheme(theme);
+    simRef.current.theme = theme;
+    setHud(makeHudSnapshot(simRef.current));
+    requestRenderRef.current();
+  }, []);
+
+  const startNewRun = useCallback(
+    (fromUserGesture = true) => {
+      if (fromUserGesture) {
+        synthAudio.unlock();
+      }
+      const fresh = createSandboxState(dualWield, autoReload, selectedTheme);
+      fresh.status = 'playing';
+      simRef.current = fresh;
+      keysRef.current.clear();
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      syncDocumentBodyState('playing');
+      setHud(makeHudSnapshot(fresh));
+      requestRenderRef.current();
+    },
+    [dualWield, autoReload, selectedTheme, syncDocumentBodyState]
+  );
 
   const togglePause = useCallback(() => {
     const sim = simRef.current;
@@ -119,10 +137,12 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
       keysRef.current.clear();
       syncDocumentBodyState('paused');
       setHud(makeHudSnapshot(sim));
+      requestRenderRef.current();
     } else if (sim.status === 'paused') {
       sim.status = 'playing';
       syncDocumentBodyState('playing');
       setHud(makeHudSnapshot(sim));
+      requestRenderRef.current();
     }
   }, [syncDocumentBodyState]);
 
@@ -202,50 +222,45 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
     };
   }, [startNewRun, togglePause, toggleMute]);
 
-  // Main Canvas2D simulation & render loop (mounted once)
+  // Mount Three.js 3D WebGL Engine once with Software-WebGL afterDraw pacing
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const container = canvasMountRef.current;
+    if (!container) return;
 
-    let animId = 0;
+    const engine = new PistolWhip3DEngine(container, simRef.current.theme);
+    engineRef.current = engine;
+
+    let frameId = 0;
     let lastTime = performance.now();
     let hudSyncAccum = 0;
     let lastStatus = simRef.current.status;
-    let cachedBg: CanvasGradient | null = null;
-    let cachedH = 0;
-
-    const resizeCanvas = () => {
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = Math.max(320, Math.floor(rect.width));
-      canvas.height = Math.max(240, Math.floor(rect.height));
-      cachedBg = null;
-      drawCorridorScene(ctx, canvas.width, canvas.height, simRef.current, aimNormRef.current, cachedBg);
-    };
-
-    resizeCanvas();
-    const ro = new ResizeObserver(resizeCanvas);
-    ro.observe(canvas);
-
-    let timeoutId = 0;
     let disposed = false;
+    let renderBusy = false;
+    let renderDirty = false;
+    let loopRunning = false;
 
-    const scheduleNext = (drawMs: number) => {
-      if (disposed) return;
-      if (drawMs > 12) {
-        timeoutId = window.setTimeout(() => {
-          if (!disposed) animId = requestAnimationFrame(frame);
-        }, 16);
-      } else {
-        animId = requestAnimationFrame(frame);
-      }
+    const afterDraw = (cb: () => void) => {
+      const gl = engine.getContext();
+      const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+      gl.flush();
+      const poll = () => {
+        if (disposed) {
+          if (sync) gl.deleteSync(sync);
+          return;
+        }
+        const state = sync ? gl.getSyncParameter(sync, gl.SYNC_STATUS) : gl.SIGNALED;
+        if (state === gl.UNSIGNALED) {
+          frameId = window.setTimeout(poll, 5);
+        } else {
+          if (sync) gl.deleteSync(sync);
+          frameId = window.setTimeout(cb, 80);
+        }
+      };
+      frameId = window.setTimeout(poll, 5);
     };
 
-    const frame = (now: number) => {
-      if (disposed) return;
-      const startMs = performance.now();
-      const rawDt = Math.min(0.05, (now - lastTime) / 1000);
+    const stepAndDrawFrame = (now: number) => {
+      const rawDt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
       lastTime = now;
       const sim = simRef.current;
 
@@ -262,27 +277,16 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
         });
 
         hudSyncAccum += rawDt;
-        if (hudSyncAccum >= 0.1) {
+        if (hudSyncAccum >= 0.08) {
           hudSyncAccum = 0;
           setHud(makeHudSnapshot(sim));
         }
+      }
 
-        if (beatRingRef.current) {
-          const grid = computeBeatGridPosition(sim.songTimeSec, sim.timingConfig);
-          const pulseScale = 1 + Math.max(0, 1 - grid.beatPhaseNormalized * 2.2) * 0.25;
-          beatRingRef.current.style.transform = `scale(${pulseScale.toFixed(3)})`;
-        }
-
-        if (cachedH !== canvas.height || !cachedBg) {
-          cachedH = canvas.height;
-          cachedBg = ctx.createLinearGradient(0, 0, 0, canvas.height);
-          cachedBg.addColorStop(0, '#070b14');
-          cachedBg.addColorStop(0.5, '#0d1526');
-          cachedBg.addColorStop(1, '#090d16');
-        }
-        drawCorridorScene(ctx, canvas.width, canvas.height, sim, aimNormRef.current, cachedBg);
-      } else if (sim.status !== lastStatus) {
-        drawCorridorScene(ctx, canvas.width, canvas.height, sim, aimNormRef.current, cachedBg);
+      const grid = computeBeatGridPosition(sim.songTimeSec, sim.timingConfig);
+      if (beatRingRef.current) {
+        const pulseScale = 1 + Math.max(0, 1 - grid.beatPhaseNormalized * 2.1) * 0.3;
+        beatRingRef.current.style.transform = `scale(${pulseScale.toFixed(3)})`;
       }
 
       if (sim.status !== lastStatus) {
@@ -291,109 +295,185 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
         setHud(makeHudSnapshot(sim));
       }
 
-      const elapsedMs = performance.now() - startMs;
-      if (sim.status === 'playing') {
-        scheduleNext(elapsedMs);
+      engine.syncAndRender(sim, aimNormRef.current, grid.beatPhaseNormalized, rawDt);
+    };
+
+    const tick = () => {
+      if (disposed) return;
+      if (simRef.current.status !== 'playing') {
+        loopRunning = false;
+        return;
+      }
+      stepAndDrawFrame(performance.now());
+      if (engine.isSoftwareGl) {
+        afterDraw(tick);
       } else {
-        // Idle lightly when paused/title/gameover so compositor stays 100% responsive
-        timeoutId = window.setTimeout(() => {
-          if (!disposed) animId = requestAnimationFrame(frame);
-        }, 120);
+        frameId = requestAnimationFrame(tick);
       }
     };
 
-    animId = requestAnimationFrame(frame);
+    const requestRender = () => {
+      if (disposed) return;
+      if (simRef.current.status === 'playing') {
+        if (!loopRunning) {
+          loopRunning = true;
+          lastTime = performance.now();
+          frameId = requestAnimationFrame(tick);
+        }
+        return;
+      }
+
+      // On-demand render when paused/title/gameover
+      if (renderBusy) {
+        renderDirty = true;
+        return;
+      }
+      renderBusy = true;
+      frameId = requestAnimationFrame((now) => {
+        renderDirty = false;
+        if (!disposed) {
+          stepAndDrawFrame(now);
+        }
+        const done = () => {
+          renderBusy = false;
+          if (renderDirty && !disposed) requestRender();
+        };
+        if (engine.isSoftwareGl && !disposed) afterDraw(done);
+        else done();
+      });
+    };
+
+    requestRenderRef.current = requestRender;
+
+    const ro = new ResizeObserver(() => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        engine.resize(rect.width, rect.height);
+        requestRender();
+      }
+    });
+    ro.observe(container);
+
+    requestRender();
 
     return () => {
       disposed = true;
-      cancelAnimationFrame(animId);
-      clearTimeout(timeoutId);
+      cancelAnimationFrame(frameId);
+      clearTimeout(frameId);
       ro.disconnect();
+      engine.dispose();
+      engineRef.current = null;
+      if (container.firstChild) {
+        container.removeChild(container.firstChild);
+      }
     };
   }, [syncDocumentBodyState]);
 
-  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
-    aimNormRef.current = {
-      x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-      y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
-    };
-  };
-
-  const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    synthAudio.unlock();
-    const canvas = canvasRef.current;
-    const sim = simRef.current;
-    if (!canvas || sim.status !== 'playing') return;
-
-    const rect = canvas.getBoundingClientRect();
     const normX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const normY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
     aimNormRef.current = { x: normX, y: normY };
 
-    const res = fireSandboxWeapon(sim, normX, normY, canvas.width, canvas.height);
+    if (crosshairRef.current) {
+      crosshairRef.current.style.transform = `translate3d(${(normX * rect.width).toFixed(1)}px, ${(normY * rect.height).toFixed(1)}px, 0)`;
+    }
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    synthAudio.unlock();
+    const container = canvasMountRef.current;
+    const sim = simRef.current;
+    if (!container || sim.status !== 'playing') return;
+
+    const rect = container.getBoundingClientRect();
+    const normX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const normY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    aimNormRef.current = { x: normX, y: normY };
+
+    const res = fireSandboxWeapon(sim, normX, normY, rect.width, rect.height);
     if (res.fired) {
       synthAudio.playGunshot(res.beatRank);
       if (res.hit) {
         synthAudio.playHitConfirm(res.headshot);
+        if (res.kill && res.hitEnemyWorld) {
+          engineRef.current?.triggerKillVfx3D(
+            res.hitEnemyWorld.x,
+            res.hitEnemyWorld.y,
+            res.hitEnemyWorld.z,
+            res.headshot
+          );
+        }
       }
       setHud(makeHudSnapshot(sim));
     }
   };
 
+  const shieldIntegrityRatio = hud.maxHealth > 0 ? hud.health / hud.maxHealth : 0;
+
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-[#070a11] select-none" data-testid="sandbox-shell">
-      <canvas
-        ref={canvasRef}
-        data-testid="sandbox-canvas"
-        onPointerMove={handleCanvasPointerMove}
-        onPointerDown={handleCanvasPointerDown}
-        className="block h-full w-full cursor-crosshair"
+      {/* Isolated WebGL Three.js Mount Container */}
+      <div
+        ref={canvasMountRef}
+        onPointerMove={handlePointerMove}
+        onPointerDown={handlePointerDown}
+        className="absolute inset-0 h-full w-full cursor-crosshair"
       />
 
-      {/* Playing HUD Overlay (only visible while playing or paused) */}
-      {(hud.status === 'playing' || hud.status === 'paused') && (
-        <div className="pointer-events-none fixed inset-0 flex flex-col justify-between p-6">
-          <div className="flex items-start justify-between">
-            {/* Top-Left: Health Pips + Score / Combo */}
-            <div className="space-y-3">
-              <div className="flex items-center gap-2" aria-label={`Health ${hud.health} of ${hud.maxHealth}`}>
-                {Array.from({ length: hud.maxHealth }).map((_, idx) => {
-                  const filled = idx < hud.health;
-                  return (
-                    <svg key={idx} viewBox="0 0 24 24" className="h-6 w-6">
-                      <polygon
-                        points="12,2 21,7 21,17 12,22 3,17 3,7"
-                        fill={filled ? '#22d3ee' : 'rgba(15, 23, 42, 0.7)'}
-                        stroke={filled ? '#cffafe' : '#475569'}
-                        strokeWidth="2"
-                      />
-                    </svg>
-                  );
-                })}
-                <span className="ml-2 text-xs font-semibold tracking-wider text-slate-300 uppercase">
-                  {hud.dodgePosture}
-                </span>
-              </div>
+      {/* Hit Damage Screen Vignette */}
+      {hud.damagedFlash && hud.status === 'playing' && (
+        <div
+          className="pointer-events-none fixed inset-0"
+          style={{ boxShadow: 'inset 0 0 95px rgba(244, 63, 94, 0.72)' }}
+        />
+      )}
 
-              <div>
-                <div className="text-[11px] font-semibold tracking-wider text-cyan-300 uppercase">Score</div>
-                <div
-                  className="font-display text-4xl font-bold tabular-nums text-white"
-                  style={{ textShadow: '0 2px 10px rgba(0,0,0,0.85)' }}
-                >
-                  {Math.round(hud.score.totalScore).toLocaleString()}
-                </div>
-                <div className="mt-0.5 flex items-center gap-3 text-sm font-semibold tabular-nums">
-                  <span className="text-amber-300">Combo {hud.score.currentCombo}</span>
-                  <span className="text-cyan-300">{hud.score.comboMultiplier}x Mult</span>
-                  <span className="text-slate-300">{hud.progressPercent}% Track</span>
-                </div>
+      {/* High-Contrast Tactical Reticle */}
+      {hud.status === 'playing' && (
+        <div
+          ref={crosshairRef}
+          className="pointer-events-none fixed top-0 left-0 -ml-5 -mt-5 h-10 w-10"
+          style={{ transform: 'translate3d(50vw, 50vh, 0)' }}
+        >
+          <svg viewBox="0 0 40 40" className="h-full w-full">
+            <circle cx="20" cy="20" r="12" fill="none" stroke="#ffffff" strokeWidth="2" />
+            <circle cx="20" cy="20" r="12" fill="none" stroke="#ff3b9a" strokeWidth="1" strokeDasharray="4 4" />
+            <circle cx="20" cy="20" r="2.2" fill="#fde047" />
+            <line x1="2" y1="20" x2="10" y2="20" stroke="#ff3b9a" strokeWidth="2" />
+            <line x1="30" y1="20" x2="38" y2="20" stroke="#ff3b9a" strokeWidth="2" />
+            <line x1="20" y1="2" x2="20" y2="10" stroke="#ff3b9a" strokeWidth="2" />
+            <line x1="20" y1="30" x2="20" y2="38" stroke="#ff3b9a" strokeWidth="2" />
+          </svg>
+        </div>
+      )}
+
+      {/* Diegetic Pistol Whip HUD Overlay (only visible while playing or paused) */}
+      {(hud.status === 'playing' || hud.status === 'paused') && (
+        <div className="pointer-events-none fixed inset-0 flex flex-col justify-between p-5 sm:p-7">
+          {/* Top Row: Score + Top-Right Controls */}
+          <div className="flex items-start justify-between">
+            <div>
+              <div
+                className="font-display text-4xl font-extrabold italic tracking-tight tabular-nums text-white"
+                style={{
+                  textShadow:
+                    '-2px -2px 0 #090d16, 2px -2px 0 #090d16, -2px 2px 0 #090d16, 2px 2px 0 #090d16, 0 4px 12px rgba(0,0,0,0.65)',
+                }}
+              >
+                {Math.round(hud.score.totalScore).toLocaleString()}
+              </div>
+              <div
+                className="mt-1 flex items-center gap-3 text-xs font-bold tracking-wider uppercase tabular-nums text-white"
+                style={{ textShadow: '0 1px 4px rgba(0,0,0,0.9)' }}
+              >
+                <span>{THREE_THEME_PALETTES[hud.theme].label}</span>
+                <span className="text-amber-300">{hud.progressPercent}% Track</span>
+                <span className="text-cyan-200">{hud.dodgePosture}</span>
               </div>
             </div>
 
-            {/* Top-Right: Compact Controls */}
             <div className="pointer-events-auto flex items-center gap-2">
               <button
                 type="button"
@@ -403,7 +483,7 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
                   toggleMute();
                 }}
                 aria-label={muted ? 'Unmute audio' : 'Mute audio'}
-                className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-900/90 text-slate-200 hover:bg-slate-800"
+                className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-900/80 bg-slate-950/85 text-white hover:bg-slate-800"
               >
                 {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
               </button>
@@ -417,7 +497,7 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
                     togglePause();
                   }}
                   aria-label="Pause run"
-                  className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-900/90 text-slate-200 hover:bg-slate-800"
+                  className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-900/80 bg-slate-950/85 text-white hover:bg-slate-800"
                 >
                   <Pause className="h-4 w-4" />
                 </button>
@@ -431,7 +511,7 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
                   startNewRun();
                 }}
                 aria-label="Restart run"
-                className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-900/90 text-slate-200 hover:bg-slate-800"
+                className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-900/80 bg-slate-950/85 text-white hover:bg-slate-800"
               >
                 <RotateCcw className="h-4 w-4" />
               </button>
@@ -440,7 +520,7 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
                 type="button"
                 tabIndex={-1}
                 onClick={onExitToStudio}
-                className="inline-flex h-10 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-700 bg-slate-900/90 px-3.5 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                className="inline-flex h-10 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-900/80 bg-slate-950/85 px-3.5 text-xs font-semibold text-white hover:bg-slate-800"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
                 UE5 Studio
@@ -452,46 +532,121 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
           {hud.calloutText && hud.status === 'playing' && (
             <div className="self-center text-center">
               <span
-                className="font-display text-lg font-bold tracking-wider text-cyan-300"
-                style={{ textShadow: '0 2px 8px rgba(0,0,0,0.9)' }}
+                className="font-display text-xl font-extrabold italic tracking-wider text-white uppercase"
+                style={{
+                  textShadow:
+                    '-2px -2px 0 #090d16, 2px -2px 0 #090d16, -2px 2px 0 #090d16, 2px 2px 0 #090d16',
+                }}
               >
                 {hud.calloutText}
               </span>
             </div>
           )}
 
-          {/* Bottom HUD: Left/Right Pistol Ammo + Beat Pulse Ring */}
+          {/* Bottom Row: Iconic Pistol Whip Jagged Shatter Medallions */}
           <div className="flex items-end justify-between">
-            <div className="min-w-[120px]">
-              {hud.dualWield && (
-                <>
-                  <div className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase">Left Pistol</div>
-                  <div className="font-mono text-2xl font-bold tabular-nums text-cyan-300">
-                    {hud.reloading ? 'RLD' : hud.leftAmmo}
-                    <span className="text-sm text-slate-500">/{hud.maxAmmo}</span>
-                  </div>
-                </>
-              )}
+            {/* Bottom-Left: Armor Heart-Shield Medallion with Shatter Spikes */}
+            <div
+              className="relative flex h-28 w-28 items-center justify-center"
+              aria-label={`Armor ${hud.health} of ${hud.maxHealth}`}
+            >
+              <svg viewBox="0 0 140 140" className="h-full w-full overflow-visible">
+                <g fill="#090d16" opacity="0.88">
+                  <polygon points="16,44 3,34 22,58" />
+                  <polygon points="28,22 14,7 40,28" />
+                  <polygon points="94,16 108,4 82,28" />
+                  <polygon points="122,48 138,42 114,62" />
+                  <polygon points="116,96 134,108 106,108" />
+                  <polygon points="24,100 8,112 36,110" />
+                  <polygon points="62,124 58,139 76,122" />
+                </g>
+                <circle cx="70" cy="70" r="46" fill="#0f172a" stroke="#1e293b" strokeWidth="3" />
+                <circle
+                  cx="70"
+                  cy="70"
+                  r="37"
+                  fill={shieldIntegrityRatio > 0.25 ? '#b4bce6' : '#f43f5e'}
+                  stroke="#090d16"
+                  strokeWidth="3"
+                />
+                <circle
+                  cx="70"
+                  cy="70"
+                  r="41"
+                  fill="none"
+                  stroke="#f8fafc"
+                  strokeWidth="3.5"
+                  strokeDasharray={`${Math.round(shieldIntegrityRatio * 257)} 260`}
+                  transform="rotate(-90 70 70)"
+                />
+                <path
+                  d="M70 43 L90 50 V68 C90 83 81 93 70 98 C59 93 50 83 50 68 V50 Z"
+                  fill="#090d16"
+                  stroke="#f8fafc"
+                  strokeWidth="2.5"
+                />
+                <path
+                  d="M70 81 C70 81 59 73 59 65 C59 60.5 62.8 57.5 66.2 57.5 C68.3 57.5 69.5 58.6 70 59.8 C70.5 58.6 71.7 57.5 73.8 57.5 C77.2 57.5 81 60.5 81 65 C81 73 70 81 70 81 Z"
+                  fill={hud.health > 0 ? '#f8fafc' : '#475569'}
+                />
+              </svg>
+              <span className="absolute -bottom-1 rounded bg-[#090d16] px-1.5 py-0.5 font-mono text-[11px] font-bold tabular-nums text-white">
+                {hud.health}/{hud.maxHealth}
+              </span>
             </div>
 
-            <div className="flex flex-col items-center gap-2">
+            {/* Bottom-Center Control Hint */}
+            <div className="mb-1 text-center">
+              {hud.reloading && (
+                <div
+                  className="mb-1.5 font-display text-sm font-extrabold tracking-widest text-amber-300 uppercase"
+                  style={{ textShadow: '0 2px 6px #090d16' }}
+                >
+                  Reloading...
+                </div>
+              )}
+              <div className="inline-block rounded-md bg-[#090d16]/80 px-3 py-1 text-xs font-semibold tracking-wide text-white">
+                Click Shoot · A / D / S Dodge · R Reload · P Pause
+              </div>
+            </div>
+
+            {/* Bottom-Right: Multiplier Medallion with Shatter Spikes + Pulsing Beat Ring */}
+            <div
+              className="relative flex h-28 w-28 items-center justify-center"
+              aria-label={`Multiplier ${hud.score.comboMultiplier}x`}
+            >
               <div
                 ref={beatRingRef}
-                className="flex h-11 w-11 items-center justify-center rounded-full border-2 border-cyan-400 bg-slate-950/80 font-mono text-[11px] font-semibold text-cyan-200"
-              >
-                128
-              </div>
-              <div className="text-xs text-slate-400">
-                Click Shoot · A / D / S Head Dodge · R Reload · P Pause
-              </div>
-            </div>
-
-            <div className="min-w-[120px] text-right">
-              <div className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase">Right Pistol</div>
-              <div className="font-mono text-2xl font-bold tabular-nums text-cyan-300">
-                {hud.reloading ? 'RLD' : hud.rightAmmo}
-                <span className="text-sm text-slate-500">/{hud.maxAmmo}</span>
-              </div>
+                className="pointer-events-none absolute inset-1 rounded-full border-[3px] border-white/90"
+                style={{ boxShadow: '0 0 12px rgba(255,255,255,0.45)' }}
+              />
+              <svg viewBox="0 0 140 140" className="h-full w-full overflow-visible">
+                <g fill="#090d16" opacity="0.88">
+                  <polygon points="18,46 2,34 22,60" />
+                  <polygon points="34,20 20,4 46,26" />
+                  <polygon points="104,20 120,6 92,30" />
+                  <polygon points="120,58 138,54 114,72" />
+                  <polygon points="112,102 130,116 102,110" />
+                  <polygon points="26,98 8,112 38,108" />
+                </g>
+                <circle cx="70" cy="70" r="45" fill="#090d16" stroke="#1e293b" strokeWidth="3" />
+                <circle cx="70" cy="70" r="35" fill="#1d4ed8" stroke="#090d16" strokeWidth="3" />
+                <text
+                  x="70"
+                  y="78"
+                  textAnchor="middle"
+                  fill="#ffffff"
+                  stroke="#090d16"
+                  strokeWidth="2.5"
+                  paintOrder="stroke"
+                  className="font-display text-2xl font-black italic tabular-nums"
+                >
+                  {hud.score.comboMultiplier}x
+                </text>
+              </svg>
+              <span className="absolute -bottom-1 rounded bg-[#090d16] px-1.5 py-0.5 font-mono text-[11px] font-bold tabular-nums text-cyan-300">
+                {hud.score.currentCombo} HIT
+              </span>
             </div>
           </div>
         </div>
@@ -499,22 +654,50 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
 
       {/* Title Screen Modal */}
       {hud.status === 'title' && (
-        <div className="fixed inset-0 flex items-center justify-center bg-[#070a11]/88 p-6">
-          <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-[#111827] p-8 text-center">
-            <svg viewBox="0 0 120 44" className="mx-auto mb-3 h-11 w-auto" aria-hidden="true">
-              <polygon points="10,22 24,8 96,8 110,22 96,36 24,36" fill="#0f172a" stroke="#22d3ee" strokeWidth="2" />
-              <line x1="30" y1="22" x2="90" y2="22" stroke="#f97316" strokeWidth="2.5" />
+        <div className="fixed inset-0 flex items-center justify-center bg-[#070a11]/72 p-6">
+          <div className="w-full max-w-xl rounded-2xl border border-slate-700 bg-[#0f1624] p-7 text-center">
+            <svg viewBox="0 0 120 44" className="mx-auto mb-3 h-10 w-auto" aria-hidden="true">
+              <polygon points="10,22 24,8 96,8 110,22 96,36 24,36" fill="#090d16" stroke="#f472b6" strokeWidth="2.5" />
+              <line x1="28" y1="22" x2="92" y2="22" stroke="#fde047" strokeWidth="2.5" />
               <circle cx="60" cy="22" r="7" fill="#22d3ee" />
             </svg>
 
-            <h1 className="font-display text-3xl font-bold tracking-tight text-white">
-              Pulse Trigger VR Sandbox
+            <h1 className="font-display text-3xl font-extrabold italic tracking-tight text-white">
+              PULSE TRIGGER VR 3D
             </h1>
-            <p className="mt-2 text-sm text-slate-400">
-              128 BPM OpenXR Rhythm Rail Prototype — Beat-Synced Hitscan, Head Dodge, Dual Wield &amp; S+ Grading.
+            <p className="mt-1.5 text-sm text-slate-300">
+              128 BPM OpenXR Rhythm Shooter — Full 3D PBR Stage, Sculpted Pistols, Articulated Guards &amp; S+ Rank
             </p>
 
-            <div className="mt-6 flex items-center justify-center gap-6 text-xs text-slate-300">
+            <div className="mt-5 text-left">
+              <div className="mb-2 text-xs font-semibold tracking-wider text-slate-400 uppercase">
+                Stage Visual Scene
+              </div>
+              <div className="grid grid-cols-3 gap-2.5">
+                {(['sunset', 'twilight', 'dreadnought'] as StageThemeId[]).map((themeId) => {
+                  const pal = THREE_THEME_PALETTES[themeId];
+                  const active = selectedTheme === themeId;
+                  return (
+                    <button
+                      key={themeId}
+                      type="button"
+                      onClick={() => handleSelectTheme(themeId)}
+                      className={`rounded-lg border p-2.5 text-left transition-colors ${
+                        active
+                          ? 'border-cyan-400 bg-slate-800/90 text-white'
+                          : 'border-slate-700/80 bg-slate-900/70 text-slate-300 hover:border-slate-500'
+                      }`}
+                    >
+                      <div className="mb-2 h-2.5 w-full rounded-sm" style={{ background: pal.swatch }} />
+                      <div className="text-xs font-bold">{pal.label}</div>
+                      <div className="mt-0.5 text-[11px] leading-tight text-slate-400">{pal.subtitle}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-center gap-6 text-xs text-slate-200">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -536,12 +719,12 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
               </label>
             </div>
 
-            <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:justify-center">
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
               <button
                 type="button"
                 data-start="true"
                 onClick={() => startNewRun(true)}
-                className="rounded-lg bg-cyan-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-cyan-400 transition-colors"
+                className="rounded-lg bg-cyan-400 px-7 py-3 text-sm font-bold text-slate-950 hover:bg-cyan-300 transition-colors"
               >
                 Start Run
               </button>
@@ -554,7 +737,7 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
               </button>
             </div>
 
-            <p className="mt-6 text-xs text-slate-500">
+            <p className="mt-5 text-xs text-slate-400">
               Mouse Aim &amp; Shoot · A / D Lean · S Duck · R Reload · Enter or Space to Start
             </p>
           </div>
@@ -563,17 +746,17 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
 
       {/* Pause Modal */}
       {hud.status === 'paused' && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black/75 p-6">
-          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-[#111827] p-7 text-center">
+        <div className="fixed inset-0 flex items-center justify-center bg-black/70 p-6">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-[#0f1624] p-7 text-center">
             <h2 className="font-display text-2xl font-bold text-white">Run Paused</h2>
-            <p className="mt-1 text-sm text-slate-400">
+            <p className="mt-1 text-sm text-slate-300">
               Score {Math.round(hud.score.totalScore).toLocaleString()} · Track {hud.progressPercent}%
             </p>
             <div className="mt-6 flex flex-col gap-2.5">
               <button
                 type="button"
                 onClick={togglePause}
-                className="rounded-lg bg-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-cyan-400"
+                className="rounded-lg bg-cyan-400 px-5 py-2.5 text-sm font-bold text-slate-950 hover:bg-cyan-300"
               >
                 Resume
               </button>
@@ -587,7 +770,7 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
               <button
                 type="button"
                 onClick={onExitToStudio}
-                className="rounded-lg border border-slate-800 bg-transparent px-5 py-2.5 text-sm font-medium text-slate-400 hover:text-slate-200"
+                className="rounded-lg border border-slate-700 bg-transparent px-5 py-2.5 text-sm font-medium text-slate-300 hover:text-white"
               >
                 Exit to UE5 Studio
               </button>
@@ -598,13 +781,13 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
 
       {/* Results / Game Over Modal */}
       {(hud.status === 'victory' || hud.status === 'gameover') && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black/80 p-6">
-          <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-[#111827] p-8 text-center">
+        <div className="fixed inset-0 flex items-center justify-center bg-black/78 p-6">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-[#0f1624] p-8 text-center">
             <div className="text-xs font-semibold tracking-wider text-slate-400 uppercase">
               {hud.status === 'victory' ? 'Track Complete' : 'Run Terminated'}
             </div>
             <div
-              className="mt-2 font-display text-6xl font-bold tabular-nums"
+              className="mt-2 font-display text-6xl font-black italic tabular-nums"
               style={{ color: gradeAccentColor(hud.score.finalGrade) }}
             >
               {hud.score.finalGrade}
@@ -657,7 +840,7 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
                 type="button"
                 data-start="true"
                 onClick={() => startNewRun(true)}
-                className="rounded-lg bg-cyan-500 px-6 py-2.5 text-sm font-semibold text-slate-950 hover:bg-cyan-400"
+                className="rounded-lg bg-cyan-400 px-6 py-2.5 text-sm font-bold text-slate-950 hover:bg-cyan-300"
               >
                 Play Again
               </button>
@@ -674,194 +857,4 @@ export function RhythmSandboxView({ autoStart, onExitToStudio }: RhythmSandboxVi
       )}
     </div>
   );
-}
-
-function drawCorridorScene(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  h: number,
-  sim: SandboxState,
-  aimNorm: { x: number; y: number },
-  cachedBg: CanvasGradient | null
-): void {
-  const shakeAmp = sim.cameraTrauma * sim.cameraTrauma * 14;
-  const shakeX = shakeAmp > 0.2 ? (Math.random() - 0.5) * shakeAmp : 0;
-  const shakeY = shakeAmp > 0.2 ? (Math.random() - 0.5) * shakeAmp : 0;
-
-  ctx.save();
-  ctx.translate(shakeX, shakeY);
-
-  // Dark synthwave architectural background
-  if (cachedBg) {
-    ctx.fillStyle = cachedBg;
-  } else {
-    ctx.fillStyle = '#090e1a';
-  }
-  ctx.fillRect(0, 0, w, h);
-
-  const vanishX = w * (0.5 - sim.headOffsetX * 0.12);
-  const vanishY = h * (0.48 - sim.headCrouchY * 0.14);
-
-  // Beat-reactive perspective corridor ribs
-  const pulse = sim.beatPulseIntensity;
-  const gridOffset = (sim.railDistanceMeters * 0.35) % 1;
-  ctx.lineWidth = 1.5;
-
-  for (let i = 0; i < 12; i++) {
-    const t = Math.pow((i + (1 - gridOffset)) / 12, 2.0);
-    const boxW = w * 0.96 * t;
-    const boxH = h * 0.92 * t;
-    const alpha = 0.12 + pulse * 0.26 * t;
-    ctx.strokeStyle = i % 2 === 0 ? `rgba(34, 211, 238, ${alpha})` : `rgba(249, 115, 22, ${alpha * 0.7})`;
-    ctx.strokeRect(vanishX - boxW * 0.5, vanishY - boxH * 0.5, boxW, boxH);
-  }
-
-  // Floor perspective guide rails
-  ctx.strokeStyle = `rgba(34, 211, 238, ${0.22 + pulse * 0.25})`;
-  for (const lane of [-0.48, -0.24, 0, 0.24, 0.48]) {
-    ctx.beginPath();
-    ctx.moveTo(vanishX, vanishY);
-    ctx.lineTo(vanishX + w * lane * 1.4, h);
-    ctx.stroke();
-  }
-
-  // Sort enemies far-to-near
-  const sortedEnemies = [...sim.enemies].sort((a, b) => b.depthZ - a.depthZ);
-  for (const enemy of sortedEnemies) {
-    const proj = projectEnemyToNormalizedScreen(enemy, sim.headOffsetX, sim.headCrouchY);
-    const ex = proj.screenX * w;
-    const ey = proj.screenY * h;
-    const size = (enemy.archetype === 'BossUnit' ? 86 : enemy.archetype === 'HeavyUnit' ? 66 : 52) * proj.scale;
-
-    ctx.save();
-    if (enemy.state === 'Dead') {
-      ctx.globalAlpha = Math.max(0, enemy.koTimer / 0.32);
-      ctx.translate(ex, ey + (1 - ctx.globalAlpha) * 26);
-      ctx.rotate(0.28);
-    } else {
-      ctx.translate(ex, ey);
-    }
-
-    const bodyColor =
-      enemy.hitFlashTimer > 0
-        ? '#ffffff'
-        : enemy.archetype === 'BossUnit'
-          ? '#a855f7'
-          : enemy.archetype === 'HeavyUnit'
-            ? '#f59e0b'
-            : enemy.archetype === 'MeleeCharger'
-              ? '#ef4444'
-              : enemy.archetype === 'EliteUnit'
-                ? '#ec4899'
-                : '#f97316';
-
-    // Telegraph ring before enemy fires on beat
-    if (enemy.state === 'Telegraphing') {
-      ctx.strokeStyle = 'rgba(250, 204, 21, 0.85)';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(0, -size * 0.35, size * 0.9, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // Stylized torso silhouette
-    ctx.fillStyle = bodyColor;
-    ctx.beginPath();
-    ctx.roundRect(-size * 0.42, -size * 0.55, size * 0.84, size * 1.15, 6);
-    ctx.fill();
-
-    // Armor shield bar on Heavy/Boss
-    if (enemy.armor > 0) {
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 3;
-      ctx.strokeRect(-size * 0.48, -size * 0.62, size * 0.96, size * 1.28);
-    }
-
-    // Head hitbox target
-    ctx.fillStyle = enemy.hitFlashTimer > 0 ? '#ffffff' : '#fef08a';
-    ctx.beginPath();
-    ctx.arc(0, -size * 0.85, size * 0.28, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.restore();
-  }
-
-  // Incoming dodgeable neon enemy projectiles
-  for (const proj of sim.projectilePool) {
-    if (!proj.active || proj.z <= 0.1) continue;
-    const fovScale = 1.15 / Math.max(0.9, proj.z * 0.11);
-    const px = (0.5 + (proj.x - sim.headOffsetX * 0.65) * fovScale) * w;
-    const py = (0.54 - (proj.y + sim.headCrouchY * 0.45) * fovScale) * h;
-    const radius = Math.max(4, Math.min(26, 9 * fovScale));
-
-    ctx.fillStyle = '#fb7185';
-    ctx.beginPath();
-    ctx.arc(px, py, radius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#fff1f2';
-    ctx.beginPath();
-    ctx.arc(px, py, radius * 0.45, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Pooled tracer beams
-  for (const tracer of sim.tracerPool) {
-    if (!tracer.active) continue;
-    ctx.strokeStyle = tracer.color;
-    ctx.globalAlpha = Math.max(0.15, tracer.life / 0.09);
-    ctx.lineWidth = 3.5;
-    ctx.beginPath();
-    ctx.moveTo(tracer.startX, tracer.startY);
-    ctx.lineTo(tracer.endX, tracer.endY);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-
-  // Pooled impact particles
-  for (const pt of sim.particlePool) {
-    if (!pt.active) continue;
-    ctx.fillStyle = pt.color;
-    ctx.globalAlpha = Math.max(0, pt.life / pt.maxLife);
-    ctx.fillRect(pt.x - 2.5, pt.y - 2.5, 5, 5);
-    ctx.globalAlpha = 1;
-  }
-
-  // First-person VR pistol silhouettes with recoil kick
-  const drawPistol = (baseX: number, recoil: number, isLeft: boolean) => {
-    ctx.save();
-    ctx.translate(baseX, h * 0.9 - recoil * 28);
-    ctx.rotate((isLeft ? 0.12 : -0.12) + recoil * (isLeft ? -0.18 : 0.18));
-    ctx.fillStyle = '#1e293b';
-    ctx.strokeStyle = '#22d3ee';
-    ctx.lineWidth = 2;
-    ctx.fillRect(-16, -54, 32, 74);
-    ctx.strokeRect(-16, -54, 32, 74);
-    ctx.restore();
-  };
-
-  if (sim.dualWield) {
-    drawPistol(w * 0.28, sim.leftRecoil, true);
-  }
-  drawPistol(w * 0.72, sim.rightRecoil, false);
-
-  // Aim reticle
-  const rx = aimNorm.x * w;
-  const ry = aimNorm.y * h;
-  ctx.strokeStyle = '#22d3ee';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(rx, ry, 14, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(rx - 20, ry);
-  ctx.lineTo(rx - 8, ry);
-  ctx.moveTo(rx + 8, ry);
-  ctx.lineTo(rx + 20, ry);
-  ctx.moveTo(rx, ry - 20);
-  ctx.lineTo(rx, ry - 8);
-  ctx.moveTo(rx, ry + 8);
-  ctx.lineTo(rx, ry + 20);
-  ctx.stroke();
-
-  ctx.restore();
 }

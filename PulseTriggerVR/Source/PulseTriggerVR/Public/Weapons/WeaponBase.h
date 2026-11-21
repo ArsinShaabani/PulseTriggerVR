@@ -69,6 +69,10 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon")
     TObjectPtr<UNiagaraComponent> MuzzleFlashComp = nullptr;
 
+    /** Diegetic ammo counter mounted directly on the backstrap of the pistol mesh. */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|DiegeticUI")
+    TObjectPtr<class UWidgetComponent> BackstrapAmmoWidget = nullptr;
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Weapon")
     TObjectPtr<UWeaponDataAsset> WeaponData = nullptr;
 

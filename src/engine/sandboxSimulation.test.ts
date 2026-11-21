@@ -73,3 +73,23 @@ test('hitscan weapon destroys NormalShooter, chips HeavyUnit armor, and supports
   }
   assert.equal(sim.rightAmmo, 15);
 });
+
+test('supports stage theme selection, muzzle flash timers, and floating kill score popups', () => {
+  const sim = createSandboxState(true, false, 'twilight');
+  assert.equal(sim.theme, 'twilight');
+  sim.status = 'playing';
+
+  for (let i = 0; i < 70; i++) {
+    stepSandboxSimulation(sim, 1 / 60, { leanLeft: false, leanRight: false, crouch: false });
+  }
+  const target = sim.enemies[0];
+  const proj = projectEnemyToNormalizedScreen(target, sim.headOffsetX, sim.headCrouchY);
+  const shot = fireSandboxWeapon(sim, proj.screenX, proj.screenY, 1280, 720);
+
+  assert.equal(shot.hit, true);
+  assert.ok(sim.rightFlashTimer > 0);
+  const activePopups = sim.popupPool.filter((p) => p.active);
+  assert.equal(activePopups.length, 1);
+  assert.ok(activePopups[0].points >= 100);
+});
+

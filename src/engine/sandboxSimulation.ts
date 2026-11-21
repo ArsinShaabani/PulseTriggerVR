@@ -57,13 +57,30 @@ export interface SimParticle {
   y: number;
   vx: number;
   vy: number;
+  rot: number;
+  vRot: number;
+  size: number;
   color: string;
   life: number;
   maxLife: number;
 }
 
+export interface SimScorePopup {
+  active: boolean;
+  x: number;
+  y: number;
+  points: number;
+  onBeat: boolean;
+  headshot: boolean;
+  life: number;
+  maxLife: number;
+}
+
+export type StageThemeId = 'sunset' | 'twilight' | 'dreadnought';
+
 export interface SandboxState {
   status: 'title' | 'playing' | 'paused' | 'victory' | 'gameover';
+  theme: StageThemeId;
   songTimeSec: number;
   trackDurationSec: number;
   timingConfig: BeatTimingConfig;
@@ -84,6 +101,8 @@ export interface SandboxState {
   useLeftNext: boolean;
   leftRecoil: number;
   rightRecoil: number;
+  leftFlashTimer: number;
+  rightFlashTimer: number;
   hitstopTimer: number;
   cameraTrauma: number;
   lastCalloutText: string;
@@ -93,6 +112,7 @@ export interface SandboxState {
   projectilePool: SimEnemyProjectile[];
   tracerPool: SimTracerBeam[];
   particlePool: SimParticle[];
+  popupPool: SimScorePopup[];
   nextEnemyId: number;
   waveCursor: number;
 }
@@ -112,26 +132,31 @@ interface WaveScheduleItem {
   archetype: EnemyArchetype;
   laneX: number;
   depthZ: number;
+  heightY?: number;
   beatsDelay: number;
 }
 
 const LEVEL_TIMELINE: WaveScheduleItem[] = [
-  { triggerSixteenth: 8, archetype: 'NormalShooter', laneX: -0.45, depthZ: 22, beatsDelay: 3 },
-  { triggerSixteenth: 16, archetype: 'NormalShooter', laneX: 0.45, depthZ: 22, beatsDelay: 3 },
-  { triggerSixteenth: 28, archetype: 'NormalShooter', laneX: -0.65, depthZ: 24, beatsDelay: 3 },
-  { triggerSixteenth: 32, archetype: 'NormalShooter', laneX: 0.65, depthZ: 24, beatsDelay: 3 },
-  { triggerSixteenth: 44, archetype: 'HeavyUnit', laneX: 0.0, depthZ: 20, beatsDelay: 4 },
-  { triggerSixteenth: 56, archetype: 'MeleeCharger', laneX: -0.35, depthZ: 26, beatsDelay: 3 },
-  { triggerSixteenth: 68, archetype: 'EliteUnit', laneX: 0.55, depthZ: 21, beatsDelay: 3 },
-  { triggerSixteenth: 80, archetype: 'NormalShooter', laneX: -0.7, depthZ: 22, beatsDelay: 2 },
-  { triggerSixteenth: 84, archetype: 'NormalShooter', laneX: 0.7, depthZ: 22, beatsDelay: 2 },
-  { triggerSixteenth: 96, archetype: 'HeavyUnit', laneX: -0.4, depthZ: 21, beatsDelay: 3 },
-  { triggerSixteenth: 100, archetype: 'MeleeCharger', laneX: 0.4, depthZ: 26, beatsDelay: 3 },
-  { triggerSixteenth: 112, archetype: 'EliteUnit', laneX: 0.0, depthZ: 20, beatsDelay: 3 },
-  { triggerSixteenth: 128, archetype: 'BossUnit', laneX: 0.0, depthZ: 19, beatsDelay: 3 },
+  { triggerSixteenth: 4, archetype: 'NormalShooter', laneX: -0.46, depthZ: 21, heightY: 0, beatsDelay: 3 },
+  { triggerSixteenth: 12, archetype: 'NormalShooter', laneX: 0.54, depthZ: 21, heightY: 0.42, beatsDelay: 3 },
+  { triggerSixteenth: 24, archetype: 'NormalShooter', laneX: -0.66, depthZ: 23, heightY: 0.38, beatsDelay: 3 },
+  { triggerSixteenth: 30, archetype: 'NormalShooter', laneX: 0.64, depthZ: 23, heightY: 0, beatsDelay: 3 },
+  { triggerSixteenth: 44, archetype: 'HeavyUnit', laneX: 0.0, depthZ: 20, heightY: 0, beatsDelay: 4 },
+  { triggerSixteenth: 56, archetype: 'MeleeCharger', laneX: -0.35, depthZ: 26, heightY: 0, beatsDelay: 3 },
+  { triggerSixteenth: 68, archetype: 'EliteUnit', laneX: 0.55, depthZ: 21, heightY: 0.32, beatsDelay: 3 },
+  { triggerSixteenth: 80, archetype: 'NormalShooter', laneX: -0.7, depthZ: 22, heightY: 0.42, beatsDelay: 2 },
+  { triggerSixteenth: 84, archetype: 'NormalShooter', laneX: 0.7, depthZ: 22, heightY: 0, beatsDelay: 2 },
+  { triggerSixteenth: 96, archetype: 'HeavyUnit', laneX: -0.4, depthZ: 21, heightY: 0, beatsDelay: 3 },
+  { triggerSixteenth: 100, archetype: 'MeleeCharger', laneX: 0.4, depthZ: 26, heightY: 0, beatsDelay: 3 },
+  { triggerSixteenth: 112, archetype: 'EliteUnit', laneX: 0.0, depthZ: 20, heightY: 0.25, beatsDelay: 3 },
+  { triggerSixteenth: 128, archetype: 'BossUnit', laneX: 0.0, depthZ: 19, heightY: 0.2, beatsDelay: 3 },
 ];
 
-export function createSandboxState(dualWield = true, autoReload = false): SandboxState {
+export function createSandboxState(
+  dualWield = true,
+  autoReload = false,
+  theme: StageThemeId = 'sunset'
+): SandboxState {
   const projectilePool: SimEnemyProjectile[] = Array.from({ length: MAX_PROJ_POOL }, () => ({
     active: false,
     x: 0,
@@ -149,7 +174,7 @@ export function createSandboxState(dualWield = true, autoReload = false): Sandbo
     startY: 0,
     endX: 0,
     endY: 0,
-    color: '#22d3ee',
+    color: '#ff6ad5',
     life: 0,
   }));
 
@@ -159,13 +184,28 @@ export function createSandboxState(dualWield = true, autoReload = false): Sandbo
     y: 0,
     vx: 0,
     vy: 0,
-    color: '#22d3ee',
+    rot: 0,
+    vRot: 0,
+    size: 8,
+    color: '#111827',
     life: 0,
-    maxLife: 0.35,
+    maxLife: 0.45,
+  }));
+
+  const popupPool: SimScorePopup[] = Array.from({ length: 16 }, () => ({
+    active: false,
+    x: 0,
+    y: 0,
+    points: 0,
+    onBeat: false,
+    headshot: false,
+    life: 0,
+    maxLife: 0.75,
   }));
 
   return {
     status: 'title',
+    theme,
     songTimeSec: 0,
     trackDurationSec: 45,
     timingConfig: { ...DEFAULT_TIMING_CONFIG, latencyOffsetMs: 0 },
@@ -186,6 +226,8 @@ export function createSandboxState(dualWield = true, autoReload = false): Sandbo
     useLeftNext: false,
     leftRecoil: 0,
     rightRecoil: 0,
+    leftFlashTimer: 0,
+    rightFlashTimer: 0,
     hitstopTimer: 0,
     cameraTrauma: 0,
     lastCalloutText: '',
@@ -195,6 +237,7 @@ export function createSandboxState(dualWield = true, autoReload = false): Sandbo
     projectilePool,
     tracerPool,
     particlePool,
+    popupPool,
     nextEnemyId: 1,
     waveCursor: 0,
   };
@@ -280,7 +323,7 @@ function createEnemy(id: number, item: WaveScheduleItem): SimEnemy {
         archetype: 'NormalShooter',
         laneX: item.laneX,
         depthZ: item.depthZ,
-        heightY: 0,
+        heightY: item.heightY ?? 0,
         hp: 100,
         maxHp: 100,
         armor: 0,
@@ -327,29 +370,100 @@ export function spawnPooledParticles(
     const p = state.particlePool[i];
     if (!p.active) {
       const angle = (Math.PI * 2 * spawned) / count + (i % 3) * 0.25;
-      const speed = 90 + (i % 5) * 45;
+      const speed = 130 + (i % 6) * 55;
       p.active = true;
       p.x = x;
       p.y = y;
       p.vx = Math.cos(angle) * speed;
-      p.vy = Math.sin(angle) * speed;
-      p.color = color;
-      p.maxLife = 0.28 + (i % 4) * 0.06;
+      p.vy = Math.sin(angle) * speed - 40;
+      p.rot = angle;
+      p.vRot = ((i % 2 === 0 ? 1 : -1) * (6 + (i % 5)));
+      p.size = 6 + (i % 5) * 2.5;
+      p.color = i % 3 === 0 ? color : '#0f172a';
+      p.maxLife = 0.36 + (i % 4) * 0.08;
       p.life = p.maxLife;
       spawned += 1;
     }
   }
 }
 
-export function projectEnemyToNormalizedScreen(enemy: SimEnemy, headOffsetX: number, headCrouchY: number): {
+export function spawnScorePopup(
+  state: SandboxState,
+  x: number,
+  y: number,
+  points: number,
+  onBeat: boolean,
+  headshot: boolean
+): void {
+  const slot = state.popupPool.find((p) => !p.active) ?? state.popupPool[0];
+  slot.active = true;
+  slot.x = x;
+  slot.y = y;
+  slot.points = points;
+  slot.onBeat = onBeat;
+  slot.headshot = headshot;
+  slot.maxLife = 0.85;
+  slot.life = slot.maxLife;
+}
+
+export const WORLD_FOV_DEG = 58;
+export const WORLD_FOV_COT = 1 / Math.tan((WORLD_FOV_DEG * Math.PI) / 180 / 2);
+export const WORLD_CAM_BASE_Y = 1.65;
+export const WORLD_LANE_SCALE = 3.8;
+export const WORLD_HEIGHT_SCALE = 3.2;
+
+export function getCameraWorldPos(headOffsetX: number, headCrouchY: number): { x: number; y: number; z: number } {
+  return {
+    x: headOffsetX * 1.4,
+    y: WORLD_CAM_BASE_Y + headCrouchY * 1.1,
+    z: 0,
+  };
+}
+
+export function projectWorldPointToNormalizedScreen(
+  wx: number,
+  wy: number,
+  wz: number,
+  headOffsetX: number,
+  headCrouchY: number,
+  aspect = 16 / 9
+): { screenX: number; screenY: number; scale: number } {
+  const cam = getCameraWorldPos(headOffsetX, headCrouchY);
+  const dz = Math.max(0.5, cam.z - wz);
+  const ndcX = ((wx - cam.x) / dz) * (WORLD_FOV_COT / Math.max(0.4, aspect));
+  const ndcY = ((wy - cam.y) / dz) * WORLD_FOV_COT;
+  return {
+    screenX: 0.5 + 0.5 * ndcX,
+    screenY: 0.5 - 0.5 * ndcY,
+    scale: (WORLD_FOV_COT * 10) / dz,
+  };
+}
+
+export function projectEnemyToNormalizedScreen(
+  enemy: SimEnemy,
+  headOffsetX: number,
+  headCrouchY: number,
+  aspect = 16 / 9
+): {
   screenX: number; // 0..1
   screenY: number; // 0..1
+  headScreenY: number;
   scale: number;
 } {
-  const fovScale = 1.15 / Math.max(2.5, enemy.depthZ * 0.11);
-  const screenX = 0.5 + (enemy.laneX - headOffsetX * 0.65) * fovScale;
-  const screenY = 0.54 - (enemy.heightY + headCrouchY * 0.45) * fovScale;
-  return { screenX, screenY, scale: fovScale };
+  const wx = enemy.laneX * WORLD_LANE_SCALE;
+  const baseFeetY = enemy.heightY * WORLD_HEIGHT_SCALE;
+  const torsoY = baseFeetY + 1.05;
+  const headY = baseFeetY + 1.66;
+  const wz = -enemy.depthZ;
+
+  const torso = projectWorldPointToNormalizedScreen(wx, torsoY, wz, headOffsetX, headCrouchY, aspect);
+  const head = projectWorldPointToNormalizedScreen(wx, headY, wz, headOffsetX, headCrouchY, aspect);
+  return {
+    screenX: torso.screenX,
+    screenY: torso.screenY,
+    headScreenY: head.screenY,
+    scale: torso.scale,
+  };
 }
 
 export function stepSandboxSimulation(
@@ -366,6 +480,8 @@ export function stepSandboxSimulation(
   state.beatPulseIntensity = Math.max(0, state.beatPulseIntensity - dt * 4.5);
   state.leftRecoil = Math.max(0, state.leftRecoil - dt * 10);
   state.rightRecoil = Math.max(0, state.rightRecoil - dt * 10);
+  state.leftFlashTimer = Math.max(0, state.leftFlashTimer - dt);
+  state.rightFlashTimer = Math.max(0, state.rightFlashTimer - dt);
   state.cameraTrauma = Math.max(0, state.cameraTrauma - dt * 2.8);
   if (state.lastCalloutTimer > 0) {
     state.lastCalloutTimer = Math.max(0, state.lastCalloutTimer - dt);
@@ -381,8 +497,17 @@ export function stepSandboxSimulation(
     if (p.active) {
       p.x += p.vx * dt;
       p.y += p.vy * dt;
+      p.vy += 260 * dt;
+      p.rot += p.vRot * dt;
       p.life -= dt;
       if (p.life <= 0) p.active = false;
+    }
+  }
+  for (const pop of state.popupPool) {
+    if (pop.active) {
+      pop.y -= 34 * dt;
+      pop.life -= dt;
+      if (pop.life <= 0) pop.active = false;
     }
   }
 
@@ -587,6 +712,7 @@ export function fireSandboxWeapon(
   headshot: boolean;
   kill: boolean;
   beatRank: BeatAccuracyRank;
+  hitEnemyWorld?: { x: number; y: number; z: number };
 } {
   if (state.status !== 'playing' || state.reloadTimer > 0) {
     return { fired: false, hit: false, headshot: false, kill: false, beatRank: 'OffBeat' };
@@ -609,34 +735,36 @@ export function fireSandboxWeapon(
   if (useLeft) {
     state.leftAmmo -= 1;
     state.leftRecoil = 1.0;
+    state.leftFlashTimer = 0.075;
     if (state.leftAmmo === 0 && state.autoReload) triggerSandboxReload(state);
   } else {
     state.rightAmmo -= 1;
     state.rightRecoil = 1.0;
+    state.rightFlashTimer = 0.075;
     if (state.rightAmmo === 0 && state.autoReload) triggerSandboxReload(state);
   }
 
   const beatEval = evaluateBeatAccuracy(state.songTimeSec, state.timingConfig);
 
-  // Hitscan check against projected enemy bounds (with VR magnetism)
+  // Hitscan check against projected 3D enemy bounds (with VR aim magnetism)
+  const aspect = canvasHeight > 0 ? canvasWidth / canvasHeight : 16 / 9;
   let bestEnemy: SimEnemy | null = null;
   let bestDist = Infinity;
   let isHeadshot = false;
 
   for (const enemy of state.enemies) {
     if (enemy.state === 'Dead') continue;
-    const proj = projectEnemyToNormalizedScreen(enemy, state.headOffsetX, state.headCrouchY);
-    const bodyRadiusNorm = (enemy.archetype === 'BossUnit' ? 0.085 : 0.058) * proj.scale;
-    const headYNorm = proj.screenY - bodyRadiusNorm * 0.92;
+    const proj = projectEnemyToNormalizedScreen(enemy, state.headOffsetX, state.headCrouchY, aspect);
+    const bodyRadiusNorm = (enemy.archetype === 'BossUnit' ? 0.062 : 0.044) * proj.scale;
 
-    const headDist = Math.hypot(aimNormX - proj.screenX, aimNormY - headYNorm);
+    const headDist = Math.hypot(aimNormX - proj.screenX, aimNormY - proj.headScreenY);
     const bodyDist = Math.hypot(aimNormX - proj.screenX, aimNormY - proj.screenY);
 
-    if (headDist <= bodyRadiusNorm * 0.62 && headDist < bestDist) {
+    if (headDist <= bodyRadiusNorm * 0.68 && headDist < bestDist) {
       bestDist = headDist;
       bestEnemy = enemy;
       isHeadshot = true;
-    } else if (bodyDist <= bodyRadiusNorm * 1.15 && bodyDist < bestDist) {
+    } else if (bodyDist <= bodyRadiusNorm * 1.25 && bodyDist < bestDist) {
       bestDist = bodyDist;
       bestEnemy = enemy;
       isHeadshot = false;
@@ -644,7 +772,14 @@ export function fireSandboxWeapon(
   }
 
   let kill = false;
+  let hitEnemyWorld: { x: number; y: number; z: number } | undefined;
   if (bestEnemy) {
+    hitEnemyWorld = {
+      x: bestEnemy.laneX * WORLD_LANE_SCALE,
+      y: bestEnemy.heightY * WORLD_HEIGHT_SCALE,
+      z: -bestEnemy.depthZ,
+    };
+
     const rawDamage = isHeadshot ? 200 : 100;
     let remaining = rawDamage;
     if (bestEnemy.armor > 0) {
@@ -692,6 +827,14 @@ export function fireSandboxWeapon(
     const tag = isHeadshot ? 'HEADSHOT' : beatEval.rank.toUpperCase();
     state.lastCalloutText = `${tag} +${scoreRes.pointsAwarded}`;
     state.lastCalloutTimer = 0.75;
+    spawnScorePopup(
+      state,
+      aimNormX * canvasWidth,
+      aimNormY * canvasHeight - 44,
+      scoreRes.pointsAwarded,
+      beatEval.rank !== 'OffBeat',
+      isHeadshot
+    );
   } else {
     state.lastCalloutText = 'MISS';
     state.lastCalloutTimer = 0.45;
@@ -700,12 +843,12 @@ export function fireSandboxWeapon(
   // Acquire pooled tracer beam
   const tracer = state.tracerPool.find((t) => !t.active) ?? state.tracerPool[0];
   tracer.active = true;
-  tracer.startX = (useLeft ? 0.28 : 0.72) * canvasWidth;
-  tracer.startY = 0.88 * canvasHeight;
+  tracer.startX = (useLeft ? 0.36 : 0.64) * canvasWidth;
+  tracer.startY = 0.76 * canvasHeight;
   tracer.endX = aimNormX * canvasWidth;
   tracer.endY = aimNormY * canvasHeight;
-  tracer.color = beatEval.rank === 'Perfect' ? '#22d3ee' : '#fb923c';
-  tracer.life = 0.09;
+  tracer.color = beatEval.rank === 'Perfect' ? '#ff6ad5' : '#fde047';
+  tracer.life = 0.11;
 
   return {
     fired: true,
@@ -713,5 +856,6 @@ export function fireSandboxWeapon(
     headshot: isHeadshot,
     kill,
     beatRank: beatEval.rank,
+    hitEnemyWorld,
   };
 }

@@ -8,6 +8,7 @@
 #include "Systems/ScoringSubsystem.h"
 #include "Systems/PulseAudioSubsystem.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/WidgetComponent.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "TimerManager.h"
@@ -31,6 +32,14 @@ AWeaponBase::AWeaponBase()
     MuzzleFlashComp = CreateDefaultSubobject<UNiagaraComponent>(TEXT("MuzzleFlashComp"));
     MuzzleFlashComp->SetupAttachment(MuzzlePoint);
     MuzzleFlashComp->bAutoActivate = false;
+
+    BackstrapAmmoWidget = CreateDefaultSubobject<UWidgetComponent>(TEXT("BackstrapAmmoWidget"));
+    BackstrapAmmoWidget->SetupAttachment(WeaponMesh);
+    BackstrapAmmoWidget->SetWidgetSpace(EWidgetSpace::World);
+    BackstrapAmmoWidget->SetDrawSize(FVector2D(128.0f, 128.0f));
+    BackstrapAmmoWidget->SetRelativeLocation(FVector(-12.0f, 0.0f, 6.5f));
+    BackstrapAmmoWidget->SetRelativeScale3D(FVector(0.06f));
+    BackstrapAmmoWidget->SetCastShadow(false);
 }
 
 void AWeaponBase::BeginPlay()
@@ -208,8 +217,8 @@ void AWeaponBase::ExecuteHitscanShot()
             if (ABulletTracerPoolItem* Tracer = Cast<ABulletTracerPoolItem>(PoolSys->AcquireActor(WeaponData->TracerPoolClass, FTransform(Start))))
             {
                 const FLinearColor Color = (Result.BeatRank == EBeatAccuracyRank::Perfect)
-                    ? FLinearColor(0.1f, 0.95f, 1.0f)
-                    : FLinearColor(1.0f, 0.35f, 0.15f);
+                    ? FLinearColor(1.0f, 0.32f, 0.72f)
+                    : FLinearColor(1.0f, 0.75f, 0.22f);
                 Tracer->ConfigureBeam(Start, Result.ImpactLocation, Color);
             }
         }

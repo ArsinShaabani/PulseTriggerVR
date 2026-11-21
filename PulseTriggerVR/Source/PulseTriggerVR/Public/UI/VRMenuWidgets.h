@@ -112,3 +112,20 @@ public:
     UFUNCTION(BlueprintCallable, Category = "VRUI|Calibration")
     void SetBeatLatencyOffsetMs(float OffsetMs);
 };
+
+/**
+ * Stylized diegetic combat HUD mirroring the lower-left Heart-Shield Armor Ring
+ * and lower-right Multiplier Beat Pulse Ring (1x..8x).
+ */
+UCLASS()
+class PULSETRIGGERVR_API UDiegeticCombatHudWidget : public UUserWidget
+{
+    GENERATED_BODY()
+
+public:
+    UFUNCTION(BlueprintImplementableEvent, Category = "VRUI|Combat")
+    void OnUpdateArmorShieldState(int32 CurrentHP, int32 MaxHP);
+
+    UFUNCTION(BlueprintImplementableEvent, Category = "VRUI|Combat")
+    void OnUpdateComboMultiplierRing(int32 Multiplier, float NormalizedBeatPhase);
+};
