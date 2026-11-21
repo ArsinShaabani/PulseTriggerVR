@@ -1,0 +1,68 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "5.4",
+  "Category": "",
+  "Description": "Pulse Trigger VR - Standalone AAA VR Rhythm Action Shooter for Meta Quest 3 (OpenXR, 90Hz)",
+  "Modules": [
+    {
+      "Name": "PulseTriggerVR",
+      "Type": "Runtime",
+      "LoadingPhase": "Default",
+      "AdditionalDependencies": [
+        "Engine",
+        "CoreUObject",
+        "AIModule",
+        "GameplayTasks",
+        "UMG",
+        "HeadMountedDisplay",
+        "EnhancedInput"
+      ]
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "OpenXR",
+      "Enabled": true
+    },
+    {
+      "Name": "OpenXREyeTracker",
+      "Enabled": false
+    },
+    {
+      "Name": "OpenXRHandTracking",
+      "Enabled": true
+    },
+    {
+      "Name": "MetaXR",
+      "Enabled": true,
+      "SupportedTargetPlatforms": [
+        "Win64",
+        "Android"
+      ]
+    },
+    {
+      "Name": "Niagara",
+      "Enabled": true
+    },
+    {
+      "Name": "EnhancedInput",
+      "Enabled": true
+    },
+    {
+      "Name": "AudioMixer",
+      "Enabled": true
+    },
+    {
+      "Name": "Synthesis",
+      "Enabled": true
+    },
+    {
+      "Name": "SignificanceManager",
+      "Enabled": true
+    }
+  ],
+  "TargetPlatforms": [
+    "Android",
+    "Windows"
+  ]
+}

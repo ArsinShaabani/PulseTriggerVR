@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root xmlns:android="http://schemas.android.com/apk/res/android">
+  <init>
+    <log text="PulseTriggerVR Quest 3 OpenXR UPL Initialization"/>
+  </init>
+  <androidManifestUpdates>
+    <!-- Declare OpenXR and Meta Quest 3 VR hardware features -->
+    <addFeature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1"/>
+    <addFeature android:name="oculus.software.handtracking" android:required="false"/>
+    <addFeature android:name="com.oculus.feature.BOUNDARYLESS" android:required="false"/>
+    <addPermission android:name="com.oculus.permission.HAND_TRACKING"/>
+    <addPermission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+
+    <loopElements tag="application">
+      <addAttribute tag="$" name="android:allowBackup" value="false"/>
+      <addElements tag="$">
+        <meta-data android:name="com.oculus.supportedDevices" android:value="quest3|quest3s"/>
+        <meta-data android:name="com.oculus.ossplash.background" android:value="black"/>
+        <meta-data android:name="com.oculus.telemetry.project_id" android:value="82DCBDEB43E3B9DAB41E1BC8A16E9001"/>
+        <meta-data android:name="com.oculus.vr.focusaware" android:value="true"/>
+      </addElements>
+    </loopElements>
+
+    <loopElements tag="activity">
+      <setStringFromAttribute result="activityName" tag="$" name="android:name"/>
+      <setBoolIsEqual result="isGameActivity" arg1="$S(activityName)" arg2="com.epicgames.unreal.GameActivity"/>
+      <if condition="isGameActivity">
+        <true>
+          <addAttribute tag="$" name="android:launchMode" value="singleTask"/>
+          <addAttribute tag="$" name="android:screenOrientation" value="landscape"/>
+          <addAttribute tag="$" name="android:configChanges" value="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale|layoutDirection|density"/>
+          <addElements tag="$">
+            <meta-data android:name="com.oculus.vr.focusaware" android:value="true"/>
+          </addElements>
+        </true>
+      </if>
+    </loopElements>
+  </androidManifestUpdates>
+</root>

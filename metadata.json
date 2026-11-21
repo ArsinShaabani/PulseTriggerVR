@@ -1,0 +1,6 @@
+{
+  "name": "Pulse Trigger VR — UE5.4 Quest 3 Studio",
+  "description": "Production Unreal Engine 5.4+ C++ source architecture, Blueprint hierarchy, Meta Quest 3 90Hz optimization suite, and playable rhythm-shooter sandbox.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
